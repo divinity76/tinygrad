@@ -400,7 +400,7 @@ def is_kernel_pattern(u:UOp):
   return u.op is Ops.ASSIGN and u.src[1].op is Ops.KERNEL
 
 def make_kernel(ctx:ScheduleContext, u:UOp):
-  return u.buf_uop.assign(schedule_uop(u, ctx))
+  with Context(TRACK_MATCH_STATS=0): return u.buf_uop.assign(schedule_uop(u, ctx))
 
 DONT_PLACE_IN_KERNEL = {Ops.KERNEL, Ops.BUFFER}
 def append_to_kernel(ctx:ScheduleContext, x:UOp):
@@ -443,6 +443,7 @@ def linearize_schedule(sched_sink:UOp) -> list[ScheduleItem]:
         assert x not in replacements
         replacements[x] = x.replace(src=x.src+tuple(new_srcs))
   new_sched_sink = sched_sink.substitute(replacements)
+  type_verify(list(new_sched_sink.toposort), kernel_spec)
 
   # display
   if getenv("VIZ"): graph_rewrite(new_sched_sink, PatternMatcher([]))

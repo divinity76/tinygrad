@@ -126,7 +126,8 @@ spec = PatternMatcher([
 kernel_spec = PatternMatcher([
   (UPat(Ops.DEVICE, src=()), lambda: True),
   (UPat(Ops.BUFFER, src=(UPat(Ops.DEVICE),)), lambda: True),
-  (UPat(Ops.ASSIGN, src=(UPat(Ops.BUFFER), UPat(Ops.KERNEL))), lambda: True),
+  # NOTE: assign can depend on other assigns
+  (UPat(Ops.ASSIGN, src=[UPat(Ops.BUFFER), UPat((Ops.KERNEL, Ops.ASSIGN))], allow_any_len=True), lambda: True),
   (UPat(Ops.KERNEL, src=UPat((Ops.BUFFER, Ops.ASSIGN))), lambda: True),
 ])
 
