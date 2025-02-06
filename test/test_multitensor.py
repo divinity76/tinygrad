@@ -84,8 +84,7 @@ class TestMultiTensor(unittest.TestCase):
     for si, ei in zip(sched[:], lower_schedule(sched)):
       if isinstance(ei.prg, CompiledRunner): names.append(ei.prg.p.name)
       ei.run()
-    # NOTE: this is because the order of schedules changed
-    assert names[-3] == names[-1], "function was relinearized"
+    self.assertEqual(len(set(names)), 3), "function was relinearized"
 
   @unittest.skip("this doesn't fold because shard_ calls contiguous on all lbs")
   def test_sharded_memory(self):
