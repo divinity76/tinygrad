@@ -390,28 +390,14 @@ def schedule_uop(pre:UOp, ctx:ScheduleContext) -> UOp:
   ast = graph_rewrite(sink, to_si, si_ctx:=KernelContext(ctx.var_vals))
   # NOTE: we only add the metadata for fused tensors
   metadata = tuple(dedup(m for x in pre.toposort if x.op is not Ops.BUFFER and (m:=ctx.ops_metadata.get(x)) is not None))
-  return UOp(Ops.KERNEL, src=tuple(dedup(si_ctx.bufs)), arg=Kernel(ast, metadata))
+  return UOp(Ops.KERNEL, src=tuple(si_ctx.bufs), arg=Kernel(ast, metadata))
 
-def fix_kernel(ctx:ScheduleContext, x:UOp):
-  if x.arg.ast.op in {Ops.SINK, Ops.COPY, Ops.BUFFER_VIEW}: return None
-  new_kernel = schedule_uop(x.arg.ast.sink(), ctx)
-  return x.replace(arg=new_kernel.arg, src=tuple(dedup(s for s in x.src if s.buf_uop in new_kernel.src)))
-fix_kernels = PatternMatcher([
-  (UPat(Ops.KERNEL, name="x"), fix_kernel),
-])
-
-# NOTE: a kernel node in the graph is always ASSIGN(BUFFER, KERNEL)
+# NOTE: a kernel node is always ASSIGN(BUFFER, KERNEL)
 def is_kernel_pattern(u:UOp):
   return u.op is Ops.ASSIGN and u.src[1].op is Ops.KERNEL
 
-def init_sink(ctx, x:UOp):
-  if all(is_kernel_pattern(s) for s in x.src): return None
-  new_src: list[UOp] = []
-  for s in x.src:
-    kernel = UOp(Ops.KERNEL, src=s.src, arg=Kernel(ctx.realizes[s.buf_uop], ()))
-    assign = s.buf_uop.assign(kernel)
-    new_src.append(assign)
-  return x.replace(src=tuple(new_src))
+def make_kernel(ctx:ScheduleContext, u:UOp):
+  return u.buf_uop.assign(UOp(Ops.KERNEL, src=u.src, arg=Kernel(ctx.realizes[u.buf_uop], ())))
 
 DONT_PLACE_IN_KERNEL = {Ops.KERNEL, Ops.BUFFER}
 def append_to_kernel(ctx:ScheduleContext, x:UOp):
@@ -427,7 +413,7 @@ def append_to_kernel(ctx:ScheduleContext, x:UOp):
       continue
     # don't fuse this op
     new_src.append(s)
-  return x.replace(src=tuple(new_src)) if tuple(new_src) != x.src else None
+  return x.replace(src=ns) if (ns:=tuple(dedup(new_src))) != x.src else None
 
 PROCESS_REPLAY_CAPTURE:dict[str, bytes] = {}
 if CAPTURE_PROCESS_REPLAY:
@@ -436,9 +422,16 @@ if CAPTURE_PROCESS_REPLAY:
     for k,v in PROCESS_REPLAY_CAPTURE.items(): diskcache_put("schedule_process_replay", k, v, prepickled=True)
 
 create_kernels = PatternMatcher([
-  (UPat(Ops.SINK, name="x"), init_sink),
+  (UPat(Ops.SINK, name="x"), lambda ctx,x: x.replace(src=tuple(make_kernel(ctx, s) for s in x.src))
+    if any(not is_kernel_pattern(s) for s in x.src) else None),
   (UPat(Ops.KERNEL, name="x"), append_to_kernel),
 ])
+
+def fix_kernel(ctx:ScheduleContext, x:UOp):
+  if x.arg.ast.op in {Ops.SINK, Ops.COPY, Ops.BUFFER_VIEW}: return None
+  new_kernel = schedule_uop(x.arg.ast.sink(), ctx)
+  return x.replace(arg=new_kernel.arg, src=tuple(dedup(s for s in x.src if s.buf_uop in new_kernel.src)))
+fix_kernels = PatternMatcher([(UPat(Ops.KERNEL, name="x"), fix_kernel),])
 
 # **** schedule creation and toposort
 
@@ -511,7 +504,7 @@ def create_schedule_with_vars(big_sink:UOp) -> tuple[list[ScheduleItem], dict[Va
       for s in u.src:
         if s.op in DONT_PLACE_IN_KERNEL or is_kernel_pattern(s): continue
         # otherwise it becomes a KERNEL
-        rep[s] = s.buf_uop.assign(UOp(Ops.KERNEL, src=s.src, arg=Kernel(ctx.realizes[s.buf_uop], ())))
+        rep[s] = make_kernel(ctx, s)
     if len(rep) == 0: break
     sched_sink = sched_sink.substitute(rep)
   type_verify(list(sched_sink.toposort), kernel_spec)
