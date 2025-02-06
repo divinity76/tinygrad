@@ -412,7 +412,7 @@ def append_to_kernel(ctx:ScheduleContext, x:UOp):
     elif is_scheduled(s) and s.buf_uop in ctx.realizes: pass
     else:
       # fuse this op!
-      new_src.extend(s.src)
+      new_src.extend(uval(s).src if is_scheduled(s) else s.src)
       continue
     # don't fuse this op
     new_src.append(s)
