@@ -384,7 +384,7 @@ def schedule_uop(pre:UOp, ctx:ScheduleContext) -> UOp:
   # unbind_vars + push views to edges
   sink = graph_rewrite(graph_rewrite(ctx.realizes[pre.buf_uop].sink(), unbind_vars+view_left, ctx=ctx.var_vals), view_right)
   # remove extra uops from SINK + substitue BUFFER with DEFINE_GLOBAL
-  ast = graph_rewrite(sink, to_si, si_ctx:=KernelContext(ctx.var_vals))
+  ast = graph_rewrite(sink, to_si, KernelContext(ctx.var_vals))
   # NOTE: we only add the metadata for fused tensors
   metadata = tuple(dedup(m for x in pre.toposort if x.op is not Ops.BUFFER and (m:=ctx.ops_metadata.get(x)) is not None))
   return UOp(Ops.KERNEL, src=pre.src, arg=Kernel(ast, metadata))
