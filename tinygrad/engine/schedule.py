@@ -400,11 +400,12 @@ fix_kernels = PatternMatcher([
   (UPat(Ops.KERNEL, name="x"), fix_kernel),
 ])
 
-def is_kernel(s:UOp):
-  return s.op is Ops.ASSIGN and s.src[1].op is Ops.KERNEL
+# NOTE: a kernel node in the graph is always ASSIGN(BUFFER, KERNEL)
+def is_kernel_pattern(u:UOp):
+  return u.op is Ops.ASSIGN and u.src[1].op is Ops.KERNEL
 
 def init_sink(ctx, x:UOp):
-  if all(is_kernel(s) for s in x.src): return None
+  if all(is_kernel_pattern(s) for s in x.src): return None
   new_src: list[UOp] = []
   for s in x.src:
     kernel = UOp(Ops.KERNEL, src=s.src, arg=Kernel(ctx.realizes[s.buf_uop], ()))
@@ -416,15 +417,17 @@ DONT_PLACE_IN_KERNEL = {Ops.KERNEL, Ops.BUFFER}
 def append_to_kernel(ctx:ScheduleContext, x:UOp):
   new_src: list[UOp] = []
   for s in x.src:
-    if s.op in DONT_PLACE_IN_KERNEL: pass
-    elif is_kernel(s): pass
+    # these ops are never fused
+    if s.op in DONT_PLACE_IN_KERNEL or is_kernel_pattern(s): pass
+    # otherwise we check the realize map
     elif is_scheduled(s) and s.buf_uop in ctx.realizes: pass
     else:
+      # fuse this op!
       new_src.extend(s.src)
       continue
+    # don't fuse this op
     new_src.append(s)
-  if tuple(new_src) == x.src: return None
-  return x.replace(src=tuple(new_src))
+  return x.replace(src=tuple(new_src)) if tuple(new_src) != x.src else None
 
 PROCESS_REPLAY_CAPTURE:dict[str, bytes] = {}
 if CAPTURE_PROCESS_REPLAY:
@@ -506,7 +509,7 @@ def create_schedule_with_vars(big_sink:UOp) -> tuple[list[ScheduleItem], dict[Va
     for u in sched_sink.toposort:
       if u.op is not Ops.KERNEL: continue
       for s in u.src:
-        if s.op in DONT_PLACE_IN_KERNEL or is_kernel(s): continue
+        if s.op in DONT_PLACE_IN_KERNEL or is_kernel_pattern(s): continue
         # otherwise it becomes a KERNEL
         rep[s] = s.buf_uop.assign(UOp(Ops.KERNEL, src=s.src, arg=Kernel(ctx.realizes[s.buf_uop], ())))
     if len(rep) == 0: break
