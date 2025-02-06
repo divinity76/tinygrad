@@ -234,9 +234,6 @@ def group_realizes(sink:UOp, ctx:ScheduleContext) -> dict[UOp, UOp]:
 
 # break the SINK into stores
 
-def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
-  return UOp(Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
-
 def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
   if (m:=ctx.ops_metadata.get(b)) is not None: ctx.ops_metadata[x] = m
   if b not in ctx.realizes: return x # collapse BUFFER
@@ -245,7 +242,7 @@ def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
 
 break_sched = PatternMatcher([
   # VIEW of BUFFER either becomes a LOAD/STORE or we fuse it
-  (UPat(Ops.VIEW, name="st", src=(UPat(Ops.BUFFER, name="b"),)), load_realized),
+  (UPat(Ops.VIEW, name="st", src=(UPat(Ops.BUFFER, name="b"),)), lambda st,b: UOp(Ops.LOAD, b.dtype.base, (b, st.st.to_uop()))),
   (UPat(Ops.VIEW, name="st", src=(UPat(Ops.BUFFER, name="b"), UPat.var("x"))), store_or_fuse),
 ])
 
