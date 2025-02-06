@@ -235,8 +235,7 @@ def group_realizes(sink:UOp, ctx:ScheduleContext) -> dict[UOp, UOp]:
 # break the SINK into stores
 
 def load_realized(ctx:ScheduleContext, b:UOp, st:UOp):
-  # NOTE: if we're assigning to the BUFFER too, PRELOAD tells toposort to place this load before the ASSIGN
-  return UOp(Ops.PRELOAD if b in ctx.assigns else Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
+  return UOp(Ops.LOAD, b.dtype.base, (b, unwrap(st.st).to_uop()))
 
 def store_or_fuse(ctx:ScheduleContext, b:UOp, x:UOp, st:UOp):
   if (m:=ctx.ops_metadata.get(b)) is not None: ctx.ops_metadata[x] = m
@@ -370,8 +369,6 @@ to_si = PatternMatcher([
   (UPat(Ops.ASSIGN, src=(UPat(), UPat.var("x"),)), lambda x: x),
   # don't need DEVICE anymore
   (UPat(Ops.VIEW, name="view", src=(UPat(Ops.DEVICE),)), lambda view: view.replace(src=())),
-  # PRELOAD becomes LOAD
-  (UPat(Ops.PRELOAD, name="root"), lambda root:root.replace(op=Ops.LOAD)),
   # once images are loaded they become the base dtype
   (UPat(GroupOp.All-{Ops.DEFINE_GLOBAL}, name="x"), lambda x: x.replace(dtype=x.dtype.base) if isinstance(x.dtype, ImageDType) else None),
   # if this kernel also assigns to the loaded buffer, ensure we can index it correctly
@@ -392,6 +389,12 @@ def schedule_uop(pre:UOp, ctx:ScheduleContext) -> UOp:
   metadata = tuple(dedup(m for x in pre.toposort if x.op is not Ops.BUFFER and (m:=ctx.ops_metadata.get(x)) is not None))
   return UOp(Ops.KERNEL, src=tuple(si_ctx.bufs), arg=Kernel(ast, metadata))
 
+PROCESS_REPLAY_CAPTURE:dict[str, bytes] = {}
+if CAPTURE_PROCESS_REPLAY:
+  @atexit.register
+  def save_process_replay():
+    for k,v in PROCESS_REPLAY_CAPTURE.items(): diskcache_put("schedule_process_replay", k, v, prepickled=True)
+
 # NOTE: a kernel node is always ASSIGN(BUFFER, KERNEL)
 def is_kernel_pattern(u:UOp):
   return u.op is Ops.ASSIGN and u.src[1].op is Ops.KERNEL
@@ -403,7 +406,7 @@ DONT_PLACE_IN_KERNEL = {Ops.KERNEL, Ops.BUFFER}
 def append_to_kernel(ctx:ScheduleContext, x:UOp):
   new_src: list[UOp] = []
   for s in x.src:
-    # these ops are never fused
+    # these ops never fuse
     if s.op in DONT_PLACE_IN_KERNEL or is_kernel_pattern(s): pass
     # otherwise we check the realize map
     elif is_scheduled(s) and s.buf_uop in ctx.realizes: pass
@@ -415,18 +418,13 @@ def append_to_kernel(ctx:ScheduleContext, x:UOp):
     new_src.append(s)
   return x.replace(src=ns) if (ns:=tuple(dedup(new_src))) != x.src else None
 
-PROCESS_REPLAY_CAPTURE:dict[str, bytes] = {}
-if CAPTURE_PROCESS_REPLAY:
-  @atexit.register
-  def save_process_replay():
-    for k,v in PROCESS_REPLAY_CAPTURE.items(): diskcache_put("schedule_process_replay", k, v, prepickled=True)
-
 create_kernels = PatternMatcher([
   (UPat(Ops.SINK, name="x"), lambda ctx,x: x.replace(src=tuple(make_kernel(ctx, s) for s in x.src))
     if any(not is_kernel_pattern(s) for s in x.src) else None),
   (UPat(Ops.KERNEL, name="x"), append_to_kernel),
 ])
 
+# TODO: remove the need for this
 def fix_kernel(ctx:ScheduleContext, x:UOp):
   if x.arg.ast.op in {Ops.SINK, Ops.COPY, Ops.BUFFER_VIEW}: return None
   new_kernel = schedule_uop(x.arg.ast.sink(), ctx)
