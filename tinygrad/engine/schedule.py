@@ -382,12 +382,12 @@ unbind_vars = PatternMatcher([(UPat(Ops.BIND, name="bind", src=(UPat.var("var"),
 
 def schedule_uop(pre:UOp, ctx:ScheduleContext) -> UOp:
   # unbind_vars + push views to edges
-  sink = graph_rewrite(graph_rewrite(pre, unbind_vars+view_left, ctx=ctx.var_vals), view_right)
+  sink = graph_rewrite(graph_rewrite(ctx.realizes[pre.buf_uop].sink(), unbind_vars+view_left, ctx=ctx.var_vals), view_right)
   # remove extra uops from SINK + substitue BUFFER with DEFINE_GLOBAL
   ast = graph_rewrite(sink, to_si, si_ctx:=KernelContext(ctx.var_vals))
   # NOTE: we only add the metadata for fused tensors
   metadata = tuple(dedup(m for x in pre.toposort if x.op is not Ops.BUFFER and (m:=ctx.ops_metadata.get(x)) is not None))
-  return UOp(Ops.KERNEL, src=tuple(si_ctx.bufs), arg=Kernel(ast, metadata))
+  return UOp(Ops.KERNEL, src=pre.src, arg=Kernel(ast, metadata))
 
 PROCESS_REPLAY_CAPTURE:dict[str, bytes] = {}
 if CAPTURE_PROCESS_REPLAY:
@@ -400,7 +400,7 @@ def is_kernel_pattern(u:UOp):
   return u.op is Ops.ASSIGN and u.src[1].op is Ops.KERNEL
 
 def make_kernel(ctx:ScheduleContext, u:UOp):
-  return u.buf_uop.assign(UOp(Ops.KERNEL, src=u.src, arg=Kernel(ctx.realizes[u.buf_uop], ())))
+  return u.buf_uop.assign(schedule_uop(u, ctx))
 
 DONT_PLACE_IN_KERNEL = {Ops.KERNEL, Ops.BUFFER}
 def append_to_kernel(ctx:ScheduleContext, x:UOp):
@@ -423,13 +423,6 @@ create_kernels = PatternMatcher([
     if any(not is_kernel_pattern(s) for s in x.src) else None),
   (UPat(Ops.KERNEL, name="x"), append_to_kernel),
 ])
-
-# TODO: remove the need for this
-def fix_kernel(ctx:ScheduleContext, x:UOp):
-  if x.arg.ast.op in {Ops.SINK, Ops.COPY, Ops.BUFFER_VIEW}: return None
-  new_kernel = schedule_uop(x.arg.ast.sink(), ctx)
-  return x.replace(arg=new_kernel.arg, src=tuple(dedup(s for s in x.src if s.buf_uop in new_kernel.src)))
-fix_kernels = PatternMatcher([(UPat(Ops.KERNEL, name="x"), fix_kernel),])
 
 # **** schedule creation and toposort
 
@@ -506,7 +499,6 @@ def create_schedule_with_vars(big_sink:UOp) -> tuple[list[ScheduleItem], dict[Va
     if len(rep) == 0: break
     sched_sink = sched_sink.substitute(rep)
   type_verify(list(sched_sink.toposort), kernel_spec)
-  sched_sink = graph_rewrite(sched_sink, fix_kernels, ctx)
 
   # linearize the schedule
   schedule = linearize_schedule(sched_sink)
